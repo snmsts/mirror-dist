@@ -13,14 +13,18 @@
   hash)
 
 (defun ensure-sentinel-release (sentinel)
-  (uiop:run-program (format nil "gh release create ~A --notes sentinel"
+  (uiop:run-program (format nil "sh -c \"gh release create ~A --notes sentinel\""
                             sentinel)
+                    :output :interactive
+                    :error-output :interactive
                     :ignore-error-status t))
 
 (defun ensure-version-release (version)
   (assert version)
   (uiop:run-program (format nil "gh release create ~A --notes ~A"
-                            version version)))
+                            version version)
+                    :output :interactive
+                    :error-output :interactive))
 
 (defun upload-files (version path-list)
   (assert version)
