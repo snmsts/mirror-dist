@@ -2,12 +2,27 @@
 
 (in-package :cl-user)
 
-(defvar *hash* nil)
 (defvar *project-directory* nil)
+(defvar *project-name*  nil)
 (defvar *version* nil)
 (defvar *sentinel* nil)
 
-(defun hash (keys &optional (hash *hash*))
+(defun tgz-file ()
+  (merge-pathnames (format nil "~A-~A.tgz" *project-name* *version*) *project-directory*))
+
+(defun sentinel-file ()
+  (merge-pathnames (format nil "~A.sentinel" *project-name*) *project-directory*))
+
+(defun old-sentinel ()
+  (merge-pathnames (format nil "~A.old-sentinel" *project-name*) *project-directory*))
+
+(defun project-subdir ()
+  (merge-pathnames (format nil "~A/" *project-name*) *project-directory*)  )
+
+(defun system ()
+  (make-pathname :name *project-name* :type "system" :defaults *project-directory*))
+
+(defun hash (keys &optional hash)
   (loop for k in keys
         do (setf hash (gethash k hash)))
   hash)
@@ -36,7 +51,8 @@
 (defun map-toml (function)
   (loop for path in (uiop:directory-files *project-directory*)
         do (when (equal (pathname-type path) "toml")
-             (let ((toml (cl-toml:parse-file path)))
+             (let ((toml (cl-toml:parse-file path))
+                   (*project-name* (pathname-name path)))
                (funcall function path
                         :toml toml
                         :disabled (not (not (hash '("disable") toml))))))))
@@ -49,10 +65,9 @@
        (let* ((base-uri (format nil "https://github.com/~A/releases/download/~A/"
                                 (hash '("upload" "github") config)
                                 *sentinel*))
-              (project-name (pathname-name toml-path))
               (result (ignore-errors
-                        (dex:fetch (format nil "~A~A.sentinel" base-uri (pathname-name toml-path))
-                                   (merge-pathnames (format nil "~A.old-sentinel" (pathname-name toml-path)) *project-directory*)
+                        (dex:fetch (format nil "~A~A.sentinel" base-uri *project-name*)
+                                   (old-sentinel)
                                    :if-exists :supersede))))
          (log:info "download old sentinel ~A: ~A" 
                    project-name result))))))
@@ -64,10 +79,9 @@
   (assert (hash '("checkout" "where") toml))
   (log:info "checkout ~A" path)
   (uiop:run-program (format nil
-                            "git clone --depth 1 https://github.com/~A ~A~A"
+                            "git clone --depth 1 https://github.com/~A ~A"
                             (hash '("checkout" "where") toml)
-                            (uiop:native-namestring *project-directory*)
-                            (pathname-name path))))
+                            (uiop:native-namestring (project-subdir)))))
 
 (defun assoc-call (assoc toml-path toml)
   (let ((function (cdr (assoc (hash '("checkout" "from") toml) assoc
@@ -88,11 +102,10 @@
     (asdf:initialize-source-registry registry-path))
   (map-toml 
    (lambda (toml-path &key toml disabled &allow-other-keys)
-     (let* ((project-name (pathname-name toml-path))
-            (quickdist:*project-path* (merge-pathnames (format nil "~A/" project-name) *project-directory*)))
+     (let ((quickdist:*project-path* (project-subdir)))
        (unless disabled
-         (log:info "Processing create-dist" project-name)
-         (with-open-file (system-index (make-pathname :name project-name :type "system" :defaults *project-directory*)
+         (log:info "Processing create-dist" *project-name*)
+         (with-open-file (system-index (system-file)
                                        :direction :output :if-exists :supersede)
            (write-line "# project system-file system-name [dependency1..dependencyN]" system-index)
            (with-simple-restart (skip-project "Skip project ~S, continue with the next."
@@ -112,63 +125,53 @@
 
 (defun git-commit (toml-path toml)
   (declare (ignore toml))
-  (let ((project-name (pathname-name toml-path)))
-    (uiop:run-program
-     (format nil "sh -c \"cd ~A;git rev-parse HEAD\""
-             (uiop:native-namestring (merge-pathnames (format nil "~A/" project-name) *project-directory*)))
-     :output '(:string :stripped t)
-     :ignore-error-status t)))
+  (uiop:run-program
+   (format nil "sh -c \"cd ~A;git rev-parse HEAD\""
+           (uiop:native-namestring (project-subdir)))
+   :output '(:string :stripped t)
+   :ignore-error-status t))
 
 (defun create-sentinels ()
   (map-toml
    (lambda (toml-path &key toml disabled &allow-other-keys)
-     (let ((project-name (pathname-name toml-path)))
-       (unless disabled
-         (let ((commit (assoc-call *commit-handlers* toml-path toml)))
-           (with-open-file (o (merge-pathnames 
-                               (format nil "~A.sentinel" project-name)
-                               *project-directory*)
-                              :direction :output
-                              :if-exists :supersede
-                              :if-does-not-exist :create)
-             (let ((hash (make-hash-table :test 'equal)))
-               (setf (gethash "name" hash) project-name)
-               (setf (gethash "commit" hash) commit)
-               (setf (gethash "version" hash) *version*)
-               (cl-toml:encode hash o)))))))))
+     (unless disabled
+       (let ((commit (assoc-call *commit-handlers* toml-path toml)))
+         (with-open-file (o (sentinel-file)
+                            :direction :output
+                            :if-exists :supersede
+                            :if-does-not-exist :create)
+           (let ((hash (make-hash-table :test 'equal)))
+             (setf (gethash "name" hash) *project-name*)
+             (setf (gethash "commit" hash) commit)
+             (setf (gethash "version" hash) *version*)
+             (cl-toml:encode hash o))))))))
 
 (defun create-archives ()
   (map-toml
    (lambda (toml-path &key disabled &allow-other-keys)
-     (let* ((project-name (pathname-name toml-path))
-            (old-sentinel (merge-pathnames (format nil "~A.old-sentinel" project-name) *project-directory*))
-            (sentinel (merge-pathnames (format nil "~A.sentinel" project-name) *project-directory*)))
-       (unless disabled
-         (when (or (not (uiop:file-exists-p old-sentinel))
-                   (not (equal (hash '("commit") (cl-toml:parse-file old-sentinel))
-                               (hash '("commit") (cl-toml:parse-file sentinel)))))
-           (uiop:run-program
-            (format nil "sh -c \"cd ~A;git archive HEAD --format=tar.gz --prefix=~A/ > ../~A.tgz\""
-                    (uiop:native-namestring (merge-pathnames (format nil "~A/" project-name) *project-directory*))
-                    (format nil "~A-~A" project-name *version*)
-                    project-name)
-            :ignore-error-status t)))))))
+     (unless disabled
+       (when (or (not (uiop:file-exists-p (old-sentinel)))
+                 (not (equal (hash '("commit") (cl-toml:parse-file (old-sentinel)))
+                             (hash '("commit") (cl-toml:parse-file (sentinel-file))))))
+         (uiop:run-program
+          (format nil "sh -c \"cd ~A;git archive HEAD --format=tar.gz --prefix=~A/ > ~A\""
+                  (uiop:native-namestring (project-subdir))
+                  (format nil "~A-~A" *project-name* *version*)
+                  (uiop:native-namestring (tgz-file)))
+          :ignore-error-status t))))))
 
 (defun upload-archives ()
   (map-toml 
    (lambda (toml-path &key disabled &allow-other-keys)
      (unless disabled
-       (let* ((project-name (pathname-name toml-path))
-              (tgz (merge-pathnames (format nil "~A.tgz" project-name) *project-directory*))
-              (sentinel (merge-pathnames (format nil "~A.sentinel" project-name) *project-directory*))
-              (system (merge-pathnames (format nil "~A.system" project-name) *project-directory*))
-              (version (hash '("version") (cl-toml:parse-file sentinel))))
+       (let* ((system (system-file)))
+              (tgz (tgz-file)))
          (log:info "uploading" tgz (uiop:file-exists-p tgz))
          (when (uiop:file-exists-p tgz)
-           (ensure-version-release version)
-           (upload-files version (list tgz sentinel system))
+           (ensure-version-release *version*)
+           (upload-files *version* (list tgz (sentinel-file) system))
            (ensure-sentinel-release *sentinel*)
-           (upload-files *sentinel*  (list sentinel))))))))
+           (upload-files *sentinel*  (list (sentinel-file)))))))))
 
 (defun call-with-env (function)
   (let* ((config (cl-toml:parse-file "./config.toml"))
@@ -199,15 +202,28 @@
   (call-with-env
    (lambda (config)
      (declare (ignorable config))
-     (map-toml 
+     (map-toml
       (lambda (toml-path &key toml disabled &allow-other-keys)
         (declare (ignorable toml disabled))
-        (let* ((project-name (pathname-name toml-path))
-               (dir (merge-pathnames (format nil "~A/" project-name) *project-directory*)))
-          (ignore-errors(uiop:delete-directory-tree dir :validate t))
-          (loop for i in '("~A.old-sentinel"
-                           "~A.system"
-                           "~A.sentinel"
-                           "~A.tgz")
-                do (uiop:delete-file-if-exists
-                    (merge-pathnames (format nil i project-name) *project-directory*)))))))))
+        (ignore-errors
+          (uiop:delete-directory-tree (project-subdir) :validate t))
+        (mapc 'uiop:delete-file-if-exists (list (tgz-file) (sentinel-file) (old-sentinel) (system-file))))))))
+
+(defun download-missing-tgz ()
+  (call-with-env
+   (lambda (config)
+     (download-sentinels config)
+     (map-toml
+      (lambda (toml-path &key toml disabled &allow-other-keys)
+        (declare (ignorable toml))
+        (unless disabled
+          (let* ((*version* (hash '("version") (cl-toml:parse-file (old-sentinel)))))
+            (log:info "download" (tgz-file) (uiop:file-exists-p (tgz-file)))
+            (unless (uiop:file-exists-p (tgz-file))
+              (dex:fetch (format nil
+                                 "https://github.com/~A/releases/download/~A/~A-~A.tgz"
+                                 (hash '("upload" "github") config)
+                                 *version*
+                                 *project-name*
+                                 *version*)
+                         (tgz-file))))))))))
