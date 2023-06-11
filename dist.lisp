@@ -20,8 +20,7 @@
 (defun ensure-version-release (version)
   (assert version)
   (uiop:run-program (format nil "gh release create ~A --notes ~A"
-                            version version)
-                    :ignore-error-status t))
+                            version version)))
 
 (defun upload-files (version path-list)
   (assert version)
