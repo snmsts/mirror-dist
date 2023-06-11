@@ -19,7 +19,7 @@
 (defun project-subdir ()
   (merge-pathnames (format nil "~A/" *project-name*) *project-directory*)  )
 
-(defun system ()
+(defun system-file ()
   (make-pathname :name *project-name* :type "system" :defaults *project-directory*))
 
 (defun hash (keys &optional hash)
@@ -70,7 +70,7 @@
                                    (old-sentinel)
                                    :if-exists :supersede))))
          (log:info "download old sentinel ~A: ~A" 
-                   project-name result))))))
+                   *project-name* result))))))
                               
 (defvar *checkout-handlers*
   '(("github" . github-checkout)))
@@ -164,7 +164,7 @@
   (map-toml 
    (lambda (toml-path &key disabled &allow-other-keys)
      (unless disabled
-       (let* ((system (system-file)))
+       (let* ((system (system-file))
               (tgz (tgz-file)))
          (log:info "uploading" tgz (uiop:file-exists-p tgz))
          (when (uiop:file-exists-p tgz)
