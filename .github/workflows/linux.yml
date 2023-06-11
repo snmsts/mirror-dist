@@ -37,5 +37,9 @@ jobs:
           ros checkout log4cl
           ros install ultralisp/quickdist
       - name: mirror
+        env:
+          LISP: ${{ matrix.lisp }}
+          GH_TOKEN: ${{ github.token }}
+          ACTION: ${{ matrix.action }}
         run: |
           make $ACTION
