@@ -53,14 +53,15 @@
         do (when (equal (pathname-type path) "toml")
              (let ((toml (cl-toml:parse-file path))
                    (*project-name* (pathname-name path)))
-               (funcall function path
+               (funcall function
+                        :toml-path path
                         :toml toml
                         :disabled (not (not (hash '("disable") toml))))))))
 
 (defun download-sentinels (config)
   (assert (hash '("upload" "github") config))
   (map-toml
-   (lambda (toml-path &key disabled &allow-other-keys)
+   (lambda (&key disabled &allow-other-keys)
      (unless disabled
        (let* ((base-uri (format nil "https://github.com/~A/releases/download/~A/"
                                 (hash '("upload" "github") config)
@@ -92,7 +93,7 @@
 (defun check-updates (config)
   (declare (ignorable config))
   (map-toml 
-   (lambda (toml-path &key toml disabled &allow-other-keys)
+   (lambda (&key toml-path toml disabled &allow-other-keys)
      (assert (hash '("checkout" "from") toml))
      (unless disabled
        (assoc-call *checkout-handlers* toml-path toml)))))
@@ -101,7 +102,7 @@
   (let ((registry-path (uiop:native-namestring *project-directory*)))
     (asdf:initialize-source-registry registry-path))
   (map-toml 
-   (lambda (toml-path &key toml disabled &allow-other-keys)
+   (lambda (&key toml disabled &allow-other-keys)
      (let ((quickdist:*project-path* (project-subdir)))
        (unless disabled
          (log:info "Processing create-dist" *project-name*)
@@ -124,7 +125,7 @@
   '(("github" . git-commit)))
 
 (defun git-commit (toml-path toml)
-  (declare (ignore toml))
+  (declare (ignore toml toml-path))
   (uiop:run-program
    (format nil "sh -c \"cd ~A;git rev-parse HEAD\""
            (uiop:native-namestring (project-subdir)))
@@ -133,7 +134,7 @@
 
 (defun create-sentinels ()
   (map-toml
-   (lambda (toml-path &key toml disabled &allow-other-keys)
+   (lambda (&key toml-path toml disabled &allow-other-keys)
      (unless disabled
        (let ((commit (assoc-call *commit-handlers* toml-path toml)))
          (with-open-file (o (sentinel-file)
@@ -148,7 +149,7 @@
 
 (defun create-archives ()
   (map-toml
-   (lambda (toml-path &key disabled &allow-other-keys)
+   (lambda (&key disabled &allow-other-keys)
      (unless disabled
        (when (or (not (uiop:file-exists-p (old-sentinel)))
                  (not (equal (hash '("commit") (cl-toml:parse-file (old-sentinel)))
@@ -162,7 +163,7 @@
 
 (defun upload-archives ()
   (map-toml 
-   (lambda (toml-path &key disabled &allow-other-keys)
+   (lambda (&key disabled &allow-other-keys)
      (unless disabled
        (let* ((system (system-file))
               (tgz (tgz-file)))
@@ -203,7 +204,7 @@
    (lambda (config)
      (declare (ignorable config))
      (map-toml
-      (lambda (toml-path &key toml disabled &allow-other-keys)
+      (lambda (&key toml disabled &allow-other-keys)
         (declare (ignorable toml disabled))
         (ignore-errors
           (uiop:delete-directory-tree (project-subdir) :validate t))
@@ -214,7 +215,7 @@
    (lambda (config)
      (download-sentinels config)
      (map-toml
-      (lambda (toml-path &key toml disabled &allow-other-keys)
+      (lambda (&key toml disabled &allow-other-keys)
         (declare (ignorable toml))
         (unless disabled
           (let* ((*version* (hash '("version") (cl-toml:parse-file (old-sentinel)))))
