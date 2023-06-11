@@ -37,8 +37,13 @@ jobs:
       - name: mirror
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          OWNER: ${{ github.repository_owner }}
-          REPO: ${{ github.event.repository.name }}
+          REPOSITORY: ${{ github.repository }}
           ACTION: ${{ matrix.action }}
         run: |
+          echo $REPOSITORY
+          ros -s cl-toml \
+              -e '(defvar *hash* (cl-toml:parse-file "config.toml"))' \
+              -e '(setf (gethash "github" (gethash "upload" *hash*)) (uiop:getenv "REPOSITORY"))' \
+              -e '(with-open-file (o "config.toml" :direction :output :if-exists :supersede) (cl-toml:encode *hash* o))'
+          cat config.toml
           make $ACTION
