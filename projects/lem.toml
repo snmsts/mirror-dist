@@ -1,0 +1,9 @@
+[checkout]
+from="github"
+where="lem-project/lem"
+[system]
+ignore-filename='''
+(lambda (path)
+  (ignore-errors
+    (string-equal "contrib" path :end2 7)))
+'''

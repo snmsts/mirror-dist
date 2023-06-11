@@ -1,0 +1,3 @@
+[checkout]
+from="github"
+where="sharplispers/log4cl"
