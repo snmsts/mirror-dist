@@ -24,7 +24,8 @@
   (uiop:run-program (format nil "gh release create ~A --notes ~A"
                             version version)
                     :output :interactive
-                    :error-output :interactive))
+                    :error-output :interactive
+                    :ignore-error-status t))
 
 (defun upload-files (version path-list)
   (assert version)
