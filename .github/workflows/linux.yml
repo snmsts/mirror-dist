@@ -30,16 +30,15 @@ jobs:
       - name: Install Roswell
         env:
           LISP: ${{ matrix.lisp }}
-          GH_TOKEN: ${{ github.token }}
-          ACTION: ${{ matrix.action }}
         run: |
           curl -L https://raw.githubusercontent.com/roswell/roswell/master/scripts/install-for-ci.sh | sh
           ros checkout log4cl
           ros install ultralisp/quickdist
       - name: mirror
         env:
-          LISP: ${{ matrix.lisp }}
-          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+          REPO: ${{ github.event.repository.name }}
           ACTION: ${{ matrix.action }}
         run: |
           make $ACTION
