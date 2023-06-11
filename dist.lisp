@@ -2,6 +2,14 @@
 
 (in-package :cl-user)
 
+(handler-bind ((style-warning #'muffle-warning))
+  (quickdist::def-print-method ((obj quickdist:system-info))
+    "~A ~A ~A~{ ~A~}"
+    (quickdist:get-project-name obj)
+    (quickdist:get-filename obj)
+    (quickdist:get-name obj)
+    (quickdist:get-dependencies obj)))
+
 (defvar *project-directory* nil)
 (defvar *project-name*  nil)
 (defvar *version* nil)
@@ -21,6 +29,9 @@
 
 (defun system-file ()
   (make-pathname :name *project-name* :type "system" :defaults *project-directory*))
+
+(defun release-file ()
+  (make-pathname :name *project-name* :type "release" :defaults *project-directory*))
 
 (defun hash (keys &optional hash)
   (loop for k in keys
@@ -108,7 +119,6 @@
          (log:info "Processing create-dist" *project-name*)
          (with-open-file (system-index (system-file)
                                        :direction :output :if-exists :supersede)
-           (write-line "# project system-file system-name [dependency1..dependencyN]" system-index)
            (with-simple-restart (skip-project "Skip project ~S, continue with the next."
                                               quickdist:*project-path*)
              (let* ((systems-info (quickdist:make-systems-info quickdist:*project-path*
@@ -161,6 +171,24 @@
                   (uiop:native-namestring (tgz-file)))
           :ignore-error-status t))))))
 
+(defun create-releases ()
+  (map-toml
+   (lambda (&key disabled &allow-other-keys)
+     (unless disabled
+       (when (uiop:file-exists-p (tgz-file))
+         (let ((h (make-hash-table :test 'equal)))
+           (with-open-file (o (release-file)
+                              :direction :output
+                              :if-exists :supersede
+                              :if-does-not-exist :create)
+             (setf (gethash "project-name" h) *project-name*
+                   (gethash "version" h) *version*
+                   (gethash "archive-path" h) (file-namestring (tgz-file))
+                   (gethash "file-size" h) (ql::file-size (tgz-file))
+                   (gethash "md5sum" h) (quickdist::md5sum (tgz-file))
+                   (gethash "content-sha1" h) (quickdist::tar-content-sha1 (tgz-file)))
+             (cl-toml:encode h o))))))))
+
 (defun upload-archives ()
   (map-toml 
    (lambda (&key disabled &allow-other-keys)
@@ -170,7 +198,7 @@
          (log:info "uploading" tgz (uiop:file-exists-p tgz))
          (when (uiop:file-exists-p tgz)
            (ensure-version-release *version*)
-           (upload-files *version* (list tgz (sentinel-file) system))
+           (upload-files *version* (list tgz (sentinel-file) (release-file) system))
            (ensure-sentinel-release *sentinel*)
            (upload-files *sentinel*  (list (sentinel-file)))))))))
 
@@ -197,6 +225,7 @@
      (create-systems)
      (create-sentinels)
      (create-archives)
+     (create-releases)
      (upload-archives))))
 
 (defun clean ()
