@@ -1,5 +1,7 @@
 mirror:
 	ros -l dist.lisp -e "(mirror)"
-clean: 
+mirror-upload:
+	ros -l dist.lisp -e "(mirror)" -e "(upload)"
+clean:
 	ros -l dist.lisp -e "(clean)"
-.PHONY: clean main
+.PHONY: clean mirror mirror-upload

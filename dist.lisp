@@ -14,6 +14,7 @@
 (defvar *project-name*  nil)
 (defvar *version* nil)
 (defvar *sentinel* nil)
+(defvar *distinfo* nil)
 
 (defun tgz-file ()
   (merge-pathnames (format nil "~A-~A.tgz" *project-name* *version*) *project-directory*))
@@ -202,16 +203,30 @@
            (ensure-sentinel-release *sentinel*)
            (upload-files *sentinel*  (list (sentinel-file)))))))))
 
+(defun version (config &key version set file)
+  (when (uiop:file-exists-p file)
+    (setf version
+          (hash '("version") (cl-toml:parse-file file))))
+  (let ((result
+          (or version
+              *version*
+              (uiop:getenv "VERSION")
+              (funcall (if (hash '("projects" "version") config)
+                           (eval (read-from-string (hash '("projects" "version") config)))
+                           (lambda (universal-time)
+                             (let* ((time (multiple-value-list (decode-universal-time universal-time)))
+                                    (timestamp (reverse (subseq time 0 6))))
+                               (format nil "~{~2,'0d~}" timestamp))))
+                       (get-universal-time)))))
+    (if set
+        (setf *version* result)
+        result)))
+
 (defun call-with-env (function)
   (let* ((config (cl-toml:parse-file "./config.toml"))
-         (*version* (funcall (if (hash '("projects" "version") config)
-                                 (eval (read-from-string (hash '("projects" "version") config)))
-                                 (lambda (universal-time)
-                                   (let* ((time (multiple-value-list (decode-universal-time universal-time)))
-                                          (timestamp (reverse (subseq time 0 6))))
-                                     (format nil "~{~2,'0d~}" timestamp))))
-                             (get-universal-time)))
+         (*version* (version config :set t))
          (*sentinel* (or (ignore-errors (hash '("upload" "sentinel-release") config)) "sentinels"))
+         (*distinfo* (or (ignore-errors (hash '("upload" "distinfo-release") config)) "distinfo"))
          (*project-directory* 
            (merge-pathnames (or (hash '("projects" "dir") config)
                                 "projects/") (uiop:getcwd))))
@@ -226,6 +241,12 @@
      (create-sentinels)
      (create-archives)
      (create-releases)
+     )))
+
+(defun upload ()
+  (call-with-env
+   (lambda (config)
+     (declare (ignore config))
      (upload-archives))))
 
 (defun clean ()
@@ -237,23 +258,6 @@
         (declare (ignorable toml disabled))
         (ignore-errors
           (uiop:delete-directory-tree (project-subdir) :validate t))
-        (mapc 'uiop:delete-file-if-exists (list (tgz-file) (sentinel-file) (old-sentinel) (system-file))))))))
+        (mapc 'uiop:delete-file-if-exists (list (sentinel-file) (old-sentinel) (system-file)))))
+     (mapc 'uiop:delete-file-if-exists (uiop:directory-files *project-directory* #P"*.tgz")))))
 
-(defun download-missing-tgz ()
-  (call-with-env
-   (lambda (config)
-     (download-sentinels config)
-     (map-toml
-      (lambda (&key toml disabled &allow-other-keys)
-        (declare (ignorable toml))
-        (unless disabled
-          (let* ((*version* (hash '("version") (cl-toml:parse-file (old-sentinel)))))
-            (log:info "download" (tgz-file) (uiop:file-exists-p (tgz-file)))
-            (unless (uiop:file-exists-p (tgz-file))
-              (dex:fetch (format nil
-                                 "https://github.com/~A/releases/download/~A/~A-~A.tgz"
-                                 (hash '("upload" "github") config)
-                                 *version*
-                                 *project-name*
-                                 *version*)
-                         (tgz-file))))))))))
