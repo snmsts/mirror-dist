@@ -39,6 +39,38 @@
         do (setf hash (gethash k hash)))
   hash)
 
+(defvar *checkout-handlers*
+  '(("github" . github-checkout)))
+(defvar *commit-handlers*
+  '(("github" . git-commit)))
+(defvar *archive-handlers*
+  '(("github" . git-archive)))
+
+(defun github-checkout (path toml)
+  (assert (hash '("checkout" "where") toml))
+  (log:info "checkout ~A" path)
+  (uiop:run-program (format nil
+                            "git clone --depth 1 https://github.com/~A ~A"
+                            (hash '("checkout" "where") toml)
+                            (uiop:native-namestring (project-subdir)))))
+
+(defun git-commit (toml-path toml)
+  (declare (ignore toml toml-path))
+  (uiop:run-program
+   (format nil "sh -c \"cd ~A;git rev-parse HEAD\""
+           (uiop:native-namestring (project-subdir)))
+   :output '(:string :stripped t)
+   :ignore-error-status t))
+
+(defun git-archive (toml-path toml)
+  (declare (ignore toml toml-path))
+  (uiop:run-program
+   (format nil "sh -c \"cd ~A;git archive HEAD --format=tar.gz --prefix=~A/ > ~A\""
+           (uiop:native-namestring (project-subdir))
+           (format nil "~A-~A" *project-name* *version*)
+           (uiop:native-namestring (tgz-file)))
+   :ignore-error-status t))
+
 (defun ensure-sentinel-release (sentinel)
   (uiop:run-program (format nil "sh -c \"gh release create ~A --notes sentinel\""
                             sentinel)
@@ -85,17 +117,6 @@
          (log:info "download old sentinel ~A: ~A" 
                    *project-name* result))))))
                               
-(defvar *checkout-handlers*
-  '(("github" . github-checkout)))
-
-(defun github-checkout (path toml)
-  (assert (hash '("checkout" "where") toml))
-  (log:info "checkout ~A" path)
-  (uiop:run-program (format nil
-                            "git clone --depth 1 https://github.com/~A ~A"
-                            (hash '("checkout" "where") toml)
-                            (uiop:native-namestring (project-subdir)))))
-
 (defun assoc-call (assoc toml-path toml)
   (let ((function (cdr (assoc (hash '("checkout" "from") toml) assoc
                               :test 'equal))))
@@ -104,7 +125,7 @@
 
 (defun check-updates (config)
   (declare (ignorable config))
-  (map-toml 
+  (map-toml
    (lambda (&key toml-path toml disabled &allow-other-keys)
      (assert (hash '("checkout" "from") toml))
      (unless disabled
@@ -113,7 +134,7 @@
 (defun create-systems ()
   (let ((registry-path (uiop:native-namestring *project-directory*)))
     (asdf:initialize-source-registry registry-path))
-  (map-toml 
+  (map-toml
    (lambda (&key toml disabled &allow-other-keys)
      (let ((quickdist:*project-path* (project-subdir)))
        (unless disabled
@@ -132,17 +153,6 @@
                                :stream system-index
                                :pretty nil))))))))))
 
-(defvar *commit-handlers*
-  '(("github" . git-commit)))
-
-(defun git-commit (toml-path toml)
-  (declare (ignore toml toml-path))
-  (uiop:run-program
-   (format nil "sh -c \"cd ~A;git rev-parse HEAD\""
-           (uiop:native-namestring (project-subdir)))
-   :output '(:string :stripped t)
-   :ignore-error-status t))
-
 (defun create-sentinels ()
   (map-toml
    (lambda (&key toml-path toml disabled &allow-other-keys)
@@ -160,17 +170,12 @@
 
 (defun create-archives ()
   (map-toml
-   (lambda (&key disabled &allow-other-keys)
+   (lambda (&key toml-path toml disabled &allow-other-keys)
      (unless disabled
        (when (or (not (uiop:file-exists-p (old-sentinel)))
                  (not (equal (hash '("commit") (cl-toml:parse-file (old-sentinel)))
                              (hash '("commit") (cl-toml:parse-file (sentinel-file))))))
-         (uiop:run-program
-          (format nil "sh -c \"cd ~A;git archive HEAD --format=tar.gz --prefix=~A/ > ~A\""
-                  (uiop:native-namestring (project-subdir))
-                  (format nil "~A-~A" *project-name* *version*)
-                  (uiop:native-namestring (tgz-file)))
-          :ignore-error-status t))))))
+         (assoc-call *archive-handlers* toml-path toml))))))
 
 (defun create-releases ()
   (map-toml
@@ -191,7 +196,7 @@
              (cl-toml:encode h o))))))))
 
 (defun upload-archives ()
-  (map-toml 
+  (map-toml
    (lambda (&key disabled &allow-other-keys)
      (unless disabled
        (let* ((system (system-file))
@@ -202,6 +207,26 @@
            (upload-files *version* (list tgz (sentinel-file) (release-file) system))
            (ensure-sentinel-release *sentinel*)
            (upload-files *sentinel*  (list (sentinel-file)))))))))
+
+(defun download-info (config)
+  (map-toml
+   (lambda (&key disabled &allow-other-keys)
+     (unless disabled
+       (when (uiop:file-exists-p (old-sentinel))
+         (let* ((*version* (hash '("version") (cl-toml:parse-file (old-sentinel))))
+                (base-uri (format nil "https://github.com/~A/releases/download/~A/"
+                                  (hash '("upload" "github") config)
+                                  *version*))
+                (result1 (ignore-errors
+                           (dex:fetch (format nil "~A~A.system" base-uri *project-name*)
+                                      (system-file)
+                                      :if-exists :supersede)))
+                (result2 (ignore-errors
+                           (dex:fetch (format nil "~A~A.release" base-uri *project-name*)
+                                      (release-file)
+                                      :if-exists :supersede))))
+           (log:info "download info ~A: ~A ~A"
+                     *project-name* result1 result2)))))))
 
 (defun version (config &key version set file)
   (when (uiop:file-exists-p file)
@@ -240,14 +265,20 @@
      (create-systems)
      (create-sentinels)
      (create-archives)
-     (create-releases)
-     )))
+     (create-releases))))
 
 (defun upload ()
   (call-with-env
    (lambda (config)
      (declare (ignore config))
      (upload-archives))))
+
+(defun index ()
+  (call-with-env
+   (lambda (config)
+     (download-sentinels config)
+     (download-info config)
+     )))
 
 (defun clean ()
   (call-with-env
@@ -258,6 +289,6 @@
         (declare (ignorable toml disabled))
         (ignore-errors
           (uiop:delete-directory-tree (project-subdir) :validate t))
-        (mapc 'uiop:delete-file-if-exists (list (sentinel-file) (old-sentinel) (system-file)))))
+        (mapc 'uiop:delete-file-if-exists (list (sentinel-file) (old-sentinel) (system-file) (release-file)))))
      (mapc 'uiop:delete-file-if-exists (uiop:directory-files *project-directory* #P"*.tgz")))))
 
