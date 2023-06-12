@@ -13,6 +13,7 @@
 (defvar *project-directory* nil)
 (defvar *project-name*  nil)
 (defvar *version* nil)
+(defvar *version>* nil)
 (defvar *sentinel* nil)
 (defvar *distinfo* nil)
 
@@ -34,10 +35,18 @@
 (defun release-file ()
   (make-pathname :name *project-name* :type "release" :defaults *project-directory*))
 
+(defun distinfo ()
+  (merge-pathnames "distinfo.txt" *project-directory*))
+
+(defun old-distinfo ()
+  (merge-pathnames "distinfo.old-txt" *project-directory*))
+
 (defun hash (keys &optional hash)
   (loop for k in keys
         do (setf hash (gethash k hash)))
   hash)
+
+
 
 (defvar *checkout-handlers*
   '(("github" . github-checkout)))
@@ -71,6 +80,41 @@
            (uiop:native-namestring (tgz-file)))
    :ignore-error-status t))
 
+
+
+
+(defun version (config &key version set file)
+  (when (uiop:file-exists-p file)
+    (setf version
+          (hash '("version") (cl-toml:parse-file file))))
+  (let ((result
+          (or version
+              *version*
+              (uiop:getenv "VERSION")
+              (funcall (if (hash '("projects" "version") config)
+                           (eval (read-from-string (hash '("projects" "version") config)))
+                           (lambda (universal-time)
+                             (let* ((time (multiple-value-list (decode-universal-time universal-time)))
+                                    (timestamp (reverse (subseq time 0 6))))
+                               (format nil "~{~2,'0d~}" timestamp))))
+                       (get-universal-time)))))
+    (if set
+        (setf *version* result)
+        result)))
+
+(defun version> (config)
+  (or *version>*
+      (setf *version>*
+            (if (hash '("projects" "sort-version") config)
+                (eval (read-from-string (hash '("projects" "sort-version") config)))
+                (lambda (x y)
+                  (> (parse-integer x)
+                     (parse-integer y)))))))
+
+
+
+
+;;;
 (defun ensure-sentinel-release (sentinel)
   (uiop:run-program (format nil "sh -c \"gh release create ~A --notes sentinel\""
                             sentinel)
@@ -228,24 +272,88 @@
            (log:info "download info ~A: ~A ~A"
                      *project-name* result1 result2)))))))
 
-(defun version (config &key version set file)
-  (when (uiop:file-exists-p file)
-    (setf version
-          (hash '("version") (cl-toml:parse-file file))))
-  (let ((result
-          (or version
-              *version*
-              (uiop:getenv "VERSION")
-              (funcall (if (hash '("projects" "version") config)
-                           (eval (read-from-string (hash '("projects" "version") config)))
-                           (lambda (universal-time)
-                             (let* ((time (multiple-value-list (decode-universal-time universal-time)))
-                                    (timestamp (reverse (subseq time 0 6))))
-                               (format nil "~{~2,'0d~}" timestamp))))
-                       (get-universal-time)))))
-    (if set
-        (setf *version* result)
-        result)))
+(defun create-index (config)
+  (let (versions)
+    (with-open-file (release (merge-pathnames "releases.txt" *project-directory*)
+                             :direction :output
+                             :if-exists :supersede
+                             :if-does-not-exist :create)
+      (write-line "# project url size file-md5 content-sha1 prefix [system-file1..system-fileN]" release)
+      (with-open-file (system (merge-pathnames "systems.txt" *project-directory*)
+                              :direction :output
+                              :if-exists :supersede
+                              :if-does-not-exist :create)
+        (write-line "# project system-file system-name [dependency1..dependencyN]" system)
+        (map-toml
+         (lambda (&key disabled &allow-other-keys)
+           (unless disabled
+             (log:info "create-index" *project-name*)
+             (let* ((system-files
+                      (loop for i in (uiop:read-file-lines (system-file))
+                            for sep = (uiop:split-string i)
+                            collect (string (second sep))
+                            do (setf (second sep) (pathname-name (second sep)))
+                            do (format system "~{~A~^ ~}~%" sep)))
+                    (system-files (remove-duplicates system-files :test 'equal))
+                    (toml (cl-toml:parse-file (release-file))))
+               (flet ((h (&rest s)
+                        (hash s toml)))
+                 (push (h "version") versions)
+                 (format release "~{~A~^ ~}~%"
+                         (append
+                          (list *project-name*
+                                (format nil
+                                        "https://github.com/~A/releases/download/~A/~A"
+                                        (hash '("upload" "github") config)
+                                        (h "version")
+                                        (h "archive-path"))
+                                (h "file-size")
+                                (h "md5sum")
+                                (h "content-sha1")
+                                (format nil "~A-~A" *project-name* (h "version")))
+                          system-files)))))))))
+    (with-open-file (o (distinfo)
+                       :direction :output
+                       :if-exists :supersede
+                       :if-does-not-exist :create)
+      (let* ((versions (sort versions (version> config)))
+             (version (first versions))
+             (repo (format nil "https://github.com/~A/releases/download" (hash '("upload" "github") config))))
+        (format o "name: ~A~%"
+                (substitute #\- #\/  (hash '("upload" "github") config)))
+        (format o "version: ~A~%"
+                version)
+        (format o "distinfo-subscription-url: ~A/~A/distinfo.txt~%"
+                repo *distinfo*)
+        (format o "distinfo-template-url: ~A/{{version}}/distinfo.txt~%"
+                repo)
+        (format o "release-index-url: ~A/~A/releases.txt~%"
+                repo  version)
+        (format o "system-index-url: ~A/~A/systems.txt~%"
+                repo version)))))
+
+(defun download-distinfo (config)
+  (let* ((repo (format nil "https://github.com/~A/releases/download" (hash '("upload" "github") config)))
+         (result (ignore-errors
+                   (dex:fetch (format nil "~A/~A/distinfo.txt~%"
+                                      repo *distinfo*)
+                              (old-distinfo)
+                              :if-exists :supersede))))
+    (log:info "download old distinfo ~A: ~A"
+              *project-name* result)))
+
+(defun upload-index (config)
+  (declare (ignore config))
+  (let* ((distinfo (ql-dist::config-file-initargs (distinfo)))
+        (version (getf distinfo :version)))
+    (when (or (not (uiop:file-exists-p (old-distinfo)))
+              (not (equal (getf (ql-dist::config-file-initargs (distinfo)) :version)
+                          version)))
+      (upload-files version (list (merge-pathnames "releases.txt" *project-directory*)
+                                  (merge-pathnames "systems.txt" *project-directory*)
+                                  (distinfo)))
+      (ensure-version-release *distinfo*)
+      (upload-files *distinfo* (list (distinfo))))))
 
 (defun call-with-env (function)
   (let* ((config (cl-toml:parse-file "./config.toml"))
@@ -278,7 +386,13 @@
    (lambda (config)
      (download-sentinels config)
      (download-info config)
-     )))
+     (create-index config))))
+
+(defun index-upload ()
+  (call-with-env
+   (lambda (config)
+     (download-distinfo config)
+     (upload-index config))))
 
 (defun clean ()
   (call-with-env

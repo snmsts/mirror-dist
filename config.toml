@@ -1,5 +1,5 @@
 [upload]
-github="dummy"
+github="snmsts/mirror-dist" # edit here for your account
 [projects]
 dir="projects/"
 version='''
@@ -7,4 +7,9 @@ version='''
   (let* ((time (multiple-value-list (decode-universal-time universal-time)))
          (timestamp (reverse (subseq time 0 6))))
     (format nil "~{~2,'0d~}" timestamp)))
+'''
+sort-version='''
+(lambda (x y)
+  (> (parse-integer x)
+     (parse-integer y)))
 '''
