@@ -1,3 +1,4 @@
+disable=true
 [checkout]
 from="github"
 where="lem-project/async-process"
