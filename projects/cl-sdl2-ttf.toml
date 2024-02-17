@@ -1,0 +1,3 @@
+[checkout]
+from="github"
+where="lem-project/cl-sdl2-ttf"

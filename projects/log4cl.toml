@@ -1,3 +1,4 @@
+disable=true
 [checkout]
 from="github"
 where="sharplispers/log4cl"
